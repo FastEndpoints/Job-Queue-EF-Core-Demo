@@ -3,7 +3,7 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 
 namespace JobQueuesEfCoreDemo;
 
-sealed class JobStorageProvider : IJobStorageProvider<JobRecord>
+sealed class JobStorageProvider : IJobStorageProvider<JobRecord>, IJobResultProvider
 {
     readonly PooledDbContextFactory<JobDbContext> _dbPool;
 
@@ -45,6 +45,19 @@ sealed class JobStorageProvider : IJobStorageProvider<JobRecord>
         await db.SaveChangesAsync(c);
     }
 
+    public async Task CancelJobAsync(Guid trackingId, CancellationToken c)
+    {
+        using var db = _dbPool.CreateDbContext();
+        var job = await db.Jobs.FirstOrDefaultAsync(j => j.TrackingID == trackingId, cancellationToken: c);
+
+        if (job is not null)
+        {
+            job.IsComplete = true;
+            db.Update(job);
+            await db.SaveChangesAsync(c);
+        }
+    }
+
     public async Task OnHandlerExecutionFailureAsync(JobRecord job, Exception e, CancellationToken c)
     {
         using var db = _dbPool.CreateDbContext();
@@ -59,5 +72,25 @@ sealed class JobStorageProvider : IJobStorageProvider<JobRecord>
         var staleJobs = db.Jobs.Where(p.Match);
         db.RemoveRange(staleJobs);
         await db.SaveChangesAsync(p.CancellationToken);
+    }
+
+    public async Task StoreJobResultAsync<TResult>(Guid trackingId, TResult result, CancellationToken c)
+    {
+        using var db = _dbPool.CreateDbContext();
+        var job = await db.Jobs.SingleAsync(j => j.TrackingID == trackingId, cancellationToken: c);
+
+        ((IJobResultStorage)job).SetResult(result);
+        db.Update(job);
+        await db.SaveChangesAsync(c);
+    }
+
+    public async Task<TResult?> GetJobResultAsync<TResult>(Guid trackingId, CancellationToken c)
+    {
+        using var db = _dbPool.CreateDbContext();
+        var job = await db.Jobs.FirstOrDefaultAsync(j => j.TrackingID == trackingId, cancellationToken: c);
+
+        return job is not null
+                   ? ((IJobResultStorage)job).GetResult<TResult>()
+                   : default;
     }
 }
